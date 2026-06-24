@@ -1,0 +1,292 @@
+# MedDiTPro 相关 Baseline 调研汇总
+
+本文档面向论文 **MedDiTPro: A Prompt-Guided Diffusion Transformer for Multimodal Longitudinal Medical Data Synthesis** 中使用的 baseline，按模型范式进行归类，说明每个方法的核心思想、在 EHR 合成中的作用，以及与 MedDiTPro 的关系。
+
+## 1. Baseline 总览
+
+MedDiTPro 论文在实验中比较了 13 个 baseline，可分为五类：
+
+| 类别 | 方法 | 核心范式 |
+|---|---|---|
+| 简单神经网络 | MLP | LSTM + MLP 建模 visit 间关系 |
+| GAN 系列 | medGAN, synTEG | 对抗生成，生成离散/时间结构 EHR |
+| VAE 系列 | EVA, TWIN, MSIC | 潜变量建模、健康状态推断 |
+| Diffusion 系列 | TabDDPM, MedDiff, ScoEHR, EHRPD | 去噪扩散生成 EHR 或表格医疗数据 |
+| Language Model 系列 | PromptEHR, HALO, CEHR-GPT | 将 EHR code 序列化，用 Transformer/GPT/BART 建模 |
+
+MedDiTPro 的定位是：在 diffusion 系列基础上进一步引入 **Diffusion Transformer** 和 **结构化 prompt guidance**，专门处理多模态、纵向、visit 内 code 无序的 EHR 数据。
+
+## 2. MLP Baseline
+
+### MLP
+
+论文中的 MLP 是一个相对简单的神经网络 baseline，使用 LSTM 学习患者 visit 之间的时间关系，再用 MLP 输出生成结果。
+
+优点：
+- 实现简单。
+- 可以提供一个基础参照，说明复杂模型是否真正带来收益。
+
+局限：
+- 对多模态 code 的细粒度关系建模能力弱。
+- 难以表达诊断、药物、实验室检查、操作之间复杂的临床依赖。
+- 生成多样性和结构一致性通常较差。
+
+在 MedDiTPro 论文中的作用：作为最低复杂度的神经网络参照组。
+
+## 3. GAN 系列
+
+### medGAN
+
+medGAN 是较早将 GAN 用于合成 EHR 的代表方法。它面向高维离散医疗变量，通常结合 autoencoder 和 GAN：autoencoder 负责把离散 patient record 映射到连续空间，GAN 在连续表示上进行对抗训练，再解码回医疗记录。
+
+优点：
+- 是 EHR 合成领域的早期经典方法。
+- 对高维离散二值/计数医疗特征有针对性设计。
+- 引入 minibatch averaging 等技巧缓解 mode collapse。
+
+局限：
+- GAN 训练不稳定。
+- 容易 mode collapse，即反复生成少数常见患者模式，覆盖不了真实 EHR 的长尾分布。
+- 对纵向 visit 序列和多模态依赖建模有限。
+
+与 MedDiTPro 的差异：
+- medGAN 更像是在静态 patient record 上生成。
+- MedDiTPro 则显式建模 visit 时间结构、模态结构和 code-level 关系。
+
+### synTEG
+
+synTEG 是面向 temporal structured EHR 的生成框架。它结合 Transformer 和 Wasserstein GAN，用 Transformer 学习患者 visit 序列关系，再通过 GAN 生成 EHR 序列。
+
+优点：
+- 比早期 GAN 更重视时间结构。
+- Transformer 可以捕捉 visit 序列中的长期依赖。
+- Wasserstein GAN 相比普通 GAN 训练稳定性有所改善。
+
+局限：
+- 仍然属于对抗训练范式，训练和评价都比较敏感。
+- 对 visit 内无序 code 集合和跨模态临床一致性的刻画不如结构化 attention/prompt 明确。
+
+与 MedDiTPro 的差异：
+- synTEG 用 Transformer 学习序列关系，但生成机制仍是 GAN。
+- MedDiTPro 用 diffusion denoising 生成，并用 prompt 显式控制数据级和模态级信息。
+
+## 4. VAE 系列
+
+### EVA
+
+EVA 使用 conditional VAE 生成纵向 EHR。其基本思想是把患者 visit 序列编码到潜变量空间，再从潜变量分布中采样生成新的 EHR 序列；同时可以根据疾病条件进行条件生成。
+
+优点：
+- 概率建模清晰，适合表达不确定性。
+- 可以做条件生成，例如生成特定疾病群体的患者轨迹。
+- 相比 GAN，训练通常更稳定。
+
+局限：
+- VAE 的 latent regularization 可能导致生成结果过平滑。
+- 罕见事件、复杂并发症组合可能被弱化。
+- 对多模态 code 之间的细粒度依赖表达仍然有限。
+
+与 MedDiTPro 的差异：
+- EVA 通过 latent variable 生成 EHR。
+- MedDiTPro 通过逐步去噪建模复杂分布，更强调模态内和模态间结构。
+
+### TWIN
+
+TWIN 原本用于 personalized clinical trial digital twin generation。它用 VAE 捕捉患者数据分布，并通过 decoder 预测当前 visit 和下一次 visit 的 code，强调 cross-modality fusion 和 temporal dynamics。
+
+优点：
+- 关注患者级 digital twin，与个体化医疗和临床试验模拟相关。
+- 同时考虑当前 visit 和下一 visit，有一定时间预测能力。
+- 强调跨模态融合。
+
+局限：
+- 仍受到 VAE 生成过平滑问题影响。
+- 对 EHR 中复杂、稀疏、长尾 code 组合的拟合可能不足。
+- 在 MedDiTPro 论文实验中，TWIN 的 perplexity 仍明显高于 MedDiTPro。
+
+与 MedDiTPro 的差异：
+- TWIN 更偏 digital twin 和条件预测。
+- MedDiTPro 更偏多模态纵向 EHR 的整体合成，并用 diffusion transformer 统一生成。
+
+### MSIC
+
+MSIC 将 EHR 合成建模为概率图模型，通过 latent health state 连接不同类型医疗事件，并进行 multi-visit health state inference。
+
+优点：
+- 用隐含健康状态解释多模态事件组合，比较符合临床直觉。
+- 关注跨 visit 的时间一致性。
+- 可以生成医疗事件对应的文本报告，应用范围更广。
+
+局限：
+- 图模型和生成过程相对复杂。
+- 对高维 code 空间和多模态细粒度 interaction 的表达仍受限。
+- 在 MedDiTPro 论文中，MSIC 在某些 correlation 指标上不错，但 fidelity 和 diversity 不够均衡。
+
+与 MedDiTPro 的差异：
+- MSIC 用 latent health state 作为组织中心。
+- MedDiTPro 用 prompt 和 attention mask 作为结构化条件，引导 diffusion transformer 生成。
+
+## 5. Diffusion 系列
+
+### TabDDPM
+
+TabDDPM 是通用表格数据扩散模型，可处理连续和离散特征。MedDiTPro 论文将其作为 healthcare tabular diffusion baseline，并加入 LSTM 以学习时间关系。
+
+优点：
+- 扩散模型训练比 GAN 稳定。
+- 对混合类型表格数据有较强适配性。
+- 可用于隐私敏感场景中的表格数据合成。
+
+局限：
+- 原始 TabDDPM 不是专门为纵向多模态 EHR 设计。
+- 对 visit-level 时间结构、模态边界和 code 无序集合缺少领域先验。
+
+与 MedDiTPro 的差异：
+- TabDDPM 是通用 tabular diffusion。
+- MedDiTPro 是面向 EHR 结构定制的 prompt-guided diffusion transformer。
+
+### MedDiff
+
+MedDiff 是较早将 denoising diffusion 用于 EHR 生成的代表方法，提出 accelerated denoising diffusion，并支持 class-conditional sampling。
+
+优点：
+- 将 DDPM 引入 EHR 合成，避免 GAN 训练不稳定和 mode collapse。
+- 支持条件采样以保持标签信息。
+- 通过加速采样改善 diffusion 推理慢的问题。
+
+局限：
+- 仍主要面向较一般的 EHR 生成，缺少 MedDiTPro 这种细粒度模态结构 prompt。
+- 对多模态纵向关系的建模能力有限。
+
+与 MedDiTPro 的差异：
+- MedDiff 代表 EHR diffusion 的早期阶段。
+- MedDiTPro 进一步从 U-Net/普通 diffusion 走向 DiT 和结构化 prompt guidance。
+
+### ScoEHR
+
+ScoEHR 使用 continuous-time diffusion model 生成合成 EHR，关注时间动态建模。
+
+优点：
+- 连续时间扩散适合不规则时间间隔的医疗记录。
+- 对 EHR 的 temporal dynamics 有一定优势。
+
+局限：
+- 对多模态 code 的结构化交互建模不足。
+- 对 visit 内不同模态之间的临床一致性约束较弱。
+
+与 MedDiTPro 的差异：
+- ScoEHR 更强调 continuous-time diffusion。
+- MedDiTPro 更强调多模态结构、prompt guidance 和 transformer backbone。
+
+### EHRPD
+
+EHRPD 是 predictive diffusion model，用当前 visit 预测下一 visit，并同时估计时间间隔。它提出 time-aware visit embedding、predictive DDPM 和 predictive U-Net。
+
+优点：
+- 明确建模 visit-to-visit 的时间演化。
+- 同时生成下一次 visit 和时间间隔，贴近真实纵向 EHR。
+- 在 MedDiTPro 论文中是较强 baseline。
+
+局限：
+- 仍依赖 U-Net 风格结构，面对可变长、多模态异质 EHR 时灵活性受限。
+- 表示学习层面更偏 visit-level，不如 MedDiTPro 强调 code-level 和 modality-specific prompt。
+
+与 MedDiTPro 的差异：
+- EHRPD 是预测式扩散，侧重下一 visit。
+- MedDiTPro 是 prompt-guided diffusion transformer，侧重统一建模完整多模态纵向序列。
+
+## 6. Language Model 系列
+
+### PromptEHR
+
+PromptEHR 将 EHR 生成表述为 text-to-text translation 任务，使用预训练 BART，并设计 prompt learning 来根据人口统计等条件控制生成。
+
+优点：
+- 条件生成灵活。
+- 引入 LPL 和 MPL 等评价指标，分别衡量 longitudinal pattern 和 cross-modality connection。
+- 使用 prompt learning 控制生成条件，是 MedDiTPro 的重要思想前身之一。
+
+局限：
+- 将 EHR code 序列化后，模型容易隐含假设 visit 内 code 有顺序。
+- 论文指出 PromptEHR 在部分评估中会看到真实 patient codes，因此某些 alignment 评价不能直接公平比较。
+
+与 MedDiTPro 的差异：
+- PromptEHR 的 prompt 更接近 LM 条件控制。
+- MedDiTPro 的 prompt 是结构化可学习向量，分为 data-wise prompt 和 modality-specific prompt，并用于 diffusion denoising。
+
+### HALO
+
+HALO 是 hierarchical autoregressive language model，用层次化自回归方式生成高维纵向 EHR。它显式建模 patient、visit、code 等层级结构。
+
+优点：
+- 能处理原始高维 code 空间。
+- 层次化建模适合 patient-visit-code 结构。
+- 在一些统计性质和下游任务上表现较强。
+
+局限：
+- 自回归模型天然依赖生成顺序。
+- 对同一 visit 内无序 code 集合，顺序假设可能引入不必要偏差。
+- 在 MedDiTPro 论文中，HALO 在 MIMIC-IV 上泛化较弱。
+
+与 MedDiTPro 的差异：
+- HALO 是 autoregressive generation。
+- MedDiTPro 是 denoising generation，避免完全依赖左到右生成顺序。
+
+### CEHR-GPT
+
+CEHR-GPT 使用 GPT-style modeling 生成 chronological patient timelines，并可转化为 OMOP 数据格式。它代表了 EHR foundation model / GPT-style synthetic EHR 的方向。
+
+优点：
+- GPT 架构适合长序列和时间线建模。
+- 能生成按时间组织的 patient sequence。
+- 与 OMOP 等标准数据模型结合，应用潜力较强。
+
+局限：
+- GPT-style 模型仍强依赖 tokenization 和顺序化假设。
+- 多模态 code 类型之间如果没有足够结构约束，可能出现 modality code 错配。
+- MedDiTPro 论文指出 CEHR-GPT 虽有语言模型基础，但会生成不正确的 modality codes。
+
+与 MedDiTPro 的差异：
+- CEHR-GPT 偏 foundation model 和 chronological timeline。
+- MedDiTPro 偏结构感知生成，将模态边界、prompt、attention mask 和 diffusion 结合起来。
+
+## 7. 横向比较
+
+| 方法类别 | 代表方法 | 优势 | 主要短板 |
+|---|---|---|---|
+| MLP/LSTM | MLP | 简单、可作为基础参照 | 表达能力弱 |
+| GAN | medGAN, synTEG | 生成速度快，早期经典 | 训练不稳定，mode collapse |
+| VAE | EVA, TWIN, MSIC | 概率建模清晰，训练稳定 | 生成可能过平滑，长尾不足 |
+| Diffusion | TabDDPM, MedDiff, ScoEHR, EHRPD | 训练稳定，多样性好 | 早期方法对 EHR 结构利用不足，U-Net 适配性有限 |
+| LM | PromptEHR, HALO, CEHR-GPT | 擅长序列建模，可利用 Transformer/GPT | visit 内 code 无序性与多模态边界处理困难 |
+| MedDiTPro | 本文方法 | 结构化 prompt + DiT + 多模态 attention mask | 模型复杂，训练成本更高 |
+
+## 8. 对 MedDiTPro 的定位理解
+
+MedDiTPro 的贡献可以理解为对前三类问题的集中回应：
+
+1. 针对 GAN/VAE 的生成质量和多样性问题，采用 diffusion。
+2. 针对早期 diffusion 的 U-Net 适配性不足，采用 Diffusion Transformer。
+3. 针对 LM 的顺序化偏差和多模态错配，引入特殊 token、attention mask、data-wise prompt 和 modality-specific prompt。
+
+因此，MedDiTPro 不是简单地把 diffusion 用到 EHR 上，而是把 EHR 的领域结构拆成几个可学习和可控制的部分：
+
+- visit 之间有时间顺序；
+- visit 内 code 多数是无序集合；
+- 同一模态内部有 code-level 依赖；
+- 不同模态之间有临床耦合；
+- 患者整体轨迹需要全局上下文。
+
+## 9. 参考链接
+
+- medGAN: https://arxiv.org/abs/1703.06490
+- EVA: https://arxiv.org/abs/2012.10020
+- SynTEG: https://doi.org/10.1093/jamia/ocaa262
+- TabDDPM: https://arxiv.org/abs/2209.15421
+- MedDiff: https://arxiv.org/abs/2302.04355
+- PromptEHR: https://arxiv.org/abs/2211.01761
+- HALO: https://arxiv.org/abs/2304.02169
+- MSIC: https://arxiv.org/abs/2312.14646
+- CEHR-GPT: https://arxiv.org/abs/2402.04400
+- EHRPD: https://arxiv.org/abs/2406.13942
+- Guided discrete diffusion for EHR generation: https://arxiv.org/abs/2404.12314
